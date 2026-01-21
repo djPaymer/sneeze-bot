@@ -253,3 +253,89 @@ class Database:
             return None
         finally:
             conn.close()
+    
+    def get_all_users_stats(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Tuple[int, int]]:
+        """
+        Получает общую статистику по всем пользователям
+        
+        Args:
+            start_date: Начальная дата в формате YYYY-MM-DD (если None, все записи)
+            end_date: Конечная дата в формате YYYY-MM-DD (если None, все записи)
+        
+        Returns:
+            Список кортежей (user_id, общее_количество_чиханий)
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        if start_date and end_date:
+            cursor.execute('''
+                SELECT user_id, SUM(count) as total
+                FROM sneezes
+                WHERE date >= ? AND date < ?
+                GROUP BY user_id
+                ORDER BY total DESC
+            ''', (start_date, end_date))
+        else:
+            cursor.execute('''
+                SELECT user_id, SUM(count) as total
+                FROM sneezes
+                GROUP BY user_id
+                ORDER BY total DESC
+            ''')
+        
+        results = cursor.fetchall()
+        conn.close()
+        return results
+    
+    def get_all_users_detailed_stats(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Tuple[int, str, int]]:
+        """
+        Получает детальную статистику по всем пользователям (по датам)
+        
+        Args:
+            start_date: Начальная дата в формате YYYY-MM-DD (если None, все записи)
+            end_date: Конечная дата в формате YYYY-MM-DD (если None, все записи)
+        
+        Returns:
+            Список кортежей (user_id, date, count)
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        if start_date and end_date:
+            cursor.execute('''
+                SELECT user_id, date, count
+                FROM sneezes
+                WHERE date >= ? AND date < ?
+                ORDER BY user_id, date
+            ''', (start_date, end_date))
+        else:
+            cursor.execute('''
+                SELECT user_id, date, count
+                FROM sneezes
+                ORDER BY user_id, date
+            ''')
+        
+        results = cursor.fetchall()
+        conn.close()
+        return results
+    
+    def get_all_users(self) -> List[int]:
+        """
+        Получает список всех пользователей
+        
+        Returns:
+            Список user_id
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT DISTINCT user_id
+            FROM sneezes
+            ORDER BY user_id
+        ''')
+        
+        results = cursor.fetchall()
+        conn.close()
+        return [row[0] for row in results]

@@ -2,6 +2,7 @@ import logging
 import io
 import os
 from datetime import datetime, date, timedelta, timezone
+from typing import Optional
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from telegram import ReplyKeyboardMarkup, KeyboardButton
@@ -10,6 +11,9 @@ matplotlib.use('Agg')  # Используем backend без GUI
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib import font_manager
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.utils import get_column_letter
 import config
 from database import Database
 
@@ -25,6 +29,105 @@ def get_user_date_from_message(update: Update):
         # Дата сообщения уже в UTC, конвертируем в date
         return update.message.date.date()
     return get_utc_today()
+
+
+def is_admin(user_id: int) -> bool:
+    """Проверяет, является ли пользователь администратором"""
+    return user_id in config.ADMIN_IDS
+
+
+def create_excel_export(start_date: Optional[str] = None, end_date: Optional[str] = None) -> io.BytesIO:
+    """
+    Создает Excel файл с экспортом статистики всех пользователей
+    
+    Args:
+        start_date: Начальная дата в формате YYYY-MM-DD (если None, все записи)
+        end_date: Конечная дата в формате YYYY-MM-DD (если None, все записи)
+    
+    Returns:
+        BytesIO объект с Excel файлом
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Статистика чиханий"
+    
+    # Стили
+    header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+    header_font = Font(bold=True, color="FFFFFF", size=12)
+    title_font = Font(bold=True, size=14)
+    center_alignment = Alignment(horizontal="center", vertical="center")
+    
+    # Заголовок
+    ws['A1'] = "Статистика чиханий"
+    ws['A1'].font = title_font
+    if start_date and end_date:
+        ws['A2'] = f"Период: {start_date} - {end_date}"
+    else:
+        ws['A2'] = "За весь период"
+    ws.merge_cells('A1:D1')
+    ws.merge_cells('A2:D2')
+    
+    # Получаем данные
+    all_stats = db.get_all_users_stats(start_date, end_date)
+    detailed_stats = db.get_all_users_detailed_stats(start_date, end_date)
+    
+    # Лист 1: Общая статистика по пользователям
+    row = 4
+    ws.cell(row=row, column=1, value="User ID").fill = header_fill
+    ws.cell(row=row, column=1).font = header_font
+    ws.cell(row=row, column=1).alignment = center_alignment
+    ws.cell(row=row, column=2, value="Всего чиханий").fill = header_fill
+    ws.cell(row=row, column=2).font = header_font
+    ws.cell(row=row, column=2).alignment = center_alignment
+    
+    row += 1
+    total_all = 0
+    for user_id, total in all_stats:
+        ws.cell(row=row, column=1, value=user_id)
+        ws.cell(row=row, column=2, value=total)
+        total_all += total
+        row += 1
+    
+    # Итого
+    ws.cell(row=row, column=1, value="ИТОГО").font = Font(bold=True)
+    ws.cell(row=row, column=2, value=total_all).font = Font(bold=True)
+    
+    # Автоподбор ширины колонок
+    ws.column_dimensions['A'].width = 15
+    ws.column_dimensions['B'].width = 20
+    
+    # Лист 2: Детальная статистика
+    ws2 = wb.create_sheet(title="Детальная статистика")
+    
+    row = 1
+    ws2.cell(row=row, column=1, value="User ID").fill = header_fill
+    ws2.cell(row=row, column=1).font = header_font
+    ws2.cell(row=row, column=1).alignment = center_alignment
+    ws2.cell(row=row, column=2, value="Дата").fill = header_fill
+    ws2.cell(row=row, column=2).font = header_font
+    ws2.cell(row=row, column=2).alignment = center_alignment
+    ws2.cell(row=row, column=3, value="Количество").fill = header_fill
+    ws2.cell(row=row, column=3).font = header_font
+    ws2.cell(row=row, column=3).alignment = center_alignment
+    
+    row += 1
+    for user_id, date_str, count in detailed_stats:
+        ws2.cell(row=row, column=1, value=user_id)
+        ws2.cell(row=row, column=2, value=date_str)
+        ws2.cell(row=row, column=3, value=count)
+        row += 1
+    
+    # Автоподбор ширины колонок
+    ws2.column_dimensions['A'].width = 15
+    ws2.column_dimensions['B'].width = 15
+    ws2.column_dimensions['C'].width = 15
+    
+    # Сохраняем в BytesIO
+    excel_buffer = io.BytesIO()
+    wb.save(excel_buffer)
+    excel_buffer.seek(0)
+    
+    return excel_buffer
 
 
 # Настройка логирования
@@ -122,6 +225,7 @@ def get_reply_keyboard():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
+    user_id = update.effective_user.id
     welcome_message = (
         "👋 Привет! Я бот для отслеживания чиханий.\n\n"
         "Доступные команды:\n"
@@ -135,10 +239,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/chart week/month/<месяц> <год>/<дата1> <дата2> - график за период\n"
         "/edit <дата> <количество> - редактировать данные за дату (формат: ДД.ММ.ГГГГ)\n"
         "/today - посмотреть количество чиханий за сегодня\n"
+    )
+    
+    # Добавляем админ-команды, если пользователь администратор
+    if is_admin(user_id):
+        welcome_message += (
+            "\n🔐 Админ-команды:\n"
+            "/admin_stats - статистика всех пользователей\n"
+            "/admin_stats <дата1> <дата2> - статистика за период (формат: ДД.ММ.ГГГГ)\n"
+            "/admin_export - экспорт в Excel (все данные)\n"
+            "/admin_export <дата1> <дата2> - экспорт за период (формат: ДД.ММ.ГГГГ)\n"
+        )
+    
+    welcome_message += (
         "\n"
         "Также вы можете просто написать число - оно будет записано как количество чиханий за сегодня.\n\n"
         "Или используйте кнопки внизу экрана:"
     )
+    
     await update.message.reply_text(
         welcome_message,
         reply_markup=get_reply_keyboard()
@@ -531,6 +649,114 @@ async def handle_number_message(update: Update, context: ContextTypes.DEFAULT_TY
         pass
 
 
+async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /admin_stats - статистика всех пользователей (только для админов)"""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ У вас нет прав администратора!")
+        return
+    
+    args = context.args if context.args is not None else []
+    start_date = None
+    end_date = None
+    
+    # Парсинг аргументов для периода
+    if len(args) == 2:
+        try:
+            # Формат: ДД.ММ.ГГГГ
+            date1_parts = args[0].split('.')
+            date2_parts = args[1].split('.')
+            
+            if len(date1_parts) == 3 and len(date2_parts) == 3:
+                day1, month1, year1 = map(int, date1_parts)
+                day2, month2, year2 = map(int, date2_parts)
+                start_date = date(year1, month1, day1).isoformat()
+                end_date = (date(year2, month2, day2) + timedelta(days=1)).isoformat()
+        except ValueError:
+            await update.message.reply_text(
+                "❌ Неверный формат дат. Используйте: /admin_stats или /admin_stats ДД.ММ.ГГГГ ДД.ММ.ГГГГ"
+            )
+            return
+    
+    # Получаем статистику
+    all_stats = db.get_all_users_stats(start_date, end_date)
+    
+    if not all_stats:
+        period_text = f" за период {args[0]} - {args[1]}" if start_date and end_date else ""
+        await update.message.reply_text(f"📊 Нет данных{period_text}.")
+        return
+    
+    # Формируем сообщение
+    period_text = f" за период {args[0]} - {args[1]}" if start_date and end_date else " (за весь период)"
+    message = f"📊 Статистика всех пользователей{period_text}:\n\n"
+    
+    total_all = 0
+    for user_id_stat, total in all_stats:
+        message += f"👤 User ID: {user_id_stat}\n"
+        message += f"   Всего чиханий: {total}\n\n"
+        total_all += total
+    
+    message += f"━━━━━━━━━━━━━━━━\n"
+    message += f"📈 ИТОГО: {total_all} чиханий\n"
+    message += f"👥 Пользователей: {len(all_stats)}"
+    
+    await update.message.reply_text(message)
+
+
+async def admin_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /admin_export - экспорт в Excel (только для админов)"""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ У вас нет прав администратора!")
+        return
+    
+    args = context.args if context.args is not None else []
+    start_date = None
+    end_date = None
+    
+    # Парсинг аргументов для периода
+    if len(args) == 2:
+        try:
+            # Формат: ДД.ММ.ГГГГ
+            date1_parts = args[0].split('.')
+            date2_parts = args[1].split('.')
+            
+            if len(date1_parts) == 3 and len(date2_parts) == 3:
+                day1, month1, year1 = map(int, date1_parts)
+                day2, month2, year2 = map(int, date2_parts)
+                start_date = date(year1, month1, day1).isoformat()
+                end_date = (date(year2, month2, day2) + timedelta(days=1)).isoformat()
+        except ValueError:
+            await update.message.reply_text(
+                "❌ Неверный формат дат. Используйте: /admin_export или /admin_export ДД.ММ.ГГГГ ДД.ММ.ГГГГ"
+            )
+            return
+    
+    try:
+        await update.message.reply_text("⏳ Создаю Excel файл...")
+        
+        # Создаем Excel файл
+        excel_buffer = create_excel_export(start_date, end_date)
+        
+        # Формируем имя файла
+        if start_date and end_date:
+            filename = f"sneeze_stats_{start_date}_to_{end_date.replace('-', '')[:8]}.xlsx"
+        else:
+            filename = f"sneeze_stats_all_{datetime.now().strftime('%Y%m%d')}.xlsx"
+        
+        # Отправляем файл
+        await update.message.reply_document(
+            document=excel_buffer,
+            filename=filename,
+            caption="📊 Экспорт статистики чиханий"
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при создании Excel файла: {e}")
+        await update.message.reply_text(f"❌ Ошибка при создании Excel файла: {str(e)}")
+
+
 def main():
     """Запуск бота"""
     if not config.BOT_TOKEN:
@@ -547,6 +773,10 @@ def main():
     application.add_handler(CommandHandler("chart", show_chart))
     application.add_handler(CommandHandler("edit", edit_date))
     application.add_handler(CommandHandler("today", show_today))
+    
+    # Админ-команды
+    application.add_handler(CommandHandler("admin_stats", admin_stats))
+    application.add_handler(CommandHandler("admin_export", admin_export))
     
     # Обработчик текстовых сообщений (для записи чисел и кнопки "Чихнуть")
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_number_message))
