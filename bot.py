@@ -13,6 +13,7 @@ from matplotlib import font_manager
 import config
 from database import Database
 
+
 # Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
