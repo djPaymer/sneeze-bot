@@ -1,7 +1,7 @@
 import logging
 import io
 import os
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 from telegram import ReplyKeyboardMarkup, KeyboardButton
@@ -12,6 +12,19 @@ import matplotlib.dates as mdates
 from matplotlib import font_manager
 import config
 from database import Database
+
+
+def get_utc_today():
+    """Получает сегодняшнюю дату в UTC"""
+    return datetime.now(timezone.utc).date()
+
+
+def get_user_date_from_message(update: Update):
+    """Получает дату пользователя из сообщения (учитывает часовой пояс)"""
+    if update.message and update.message.date:
+        # Дата сообщения уже в UTC, конвертируем в date
+        return update.message.date.date()
+    return get_utc_today()
 
 
 # Настройка логирования
@@ -149,11 +162,13 @@ async def add_sneeze(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Количество не может быть отрицательным!")
             return
         
-        today = date.today().isoformat()
+        # Используем дату из сообщения пользователя для корректной работы с часовыми поясами
+        user_today = get_user_date_from_message(update)
+        today = user_today.isoformat()
         db.add_sneeze(user_id, count, today)
         
         await update.message.reply_text(
-            f"✅ Записано: {count} чиханий за сегодня ({date.today().strftime('%d.%m.%Y')})\n"
+            f"✅ Записано: {count} чиханий за сегодня ({user_today.strftime('%d.%m.%Y')})\n"
             f"🤧 Будь здоров!",
             reply_markup=get_reply_keyboard()
         )
@@ -164,7 +179,10 @@ async def add_sneeze(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /stats"""
     user_id = update.effective_user.id
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
+    
+    # Используем дату пользователя для корректного отображения
+    user_today = get_user_date_from_message(update)
     
     # Проверяем наличие args и их количество
     args = context.args if context.args is not None else []
@@ -174,18 +192,16 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if len(args) == 0:
         # По умолчанию - статистика за текущую неделю
-        stats = db.get_week_stats(user_id)
-        today = date.today()
-        week_start = today - timedelta(days=6)
-        period_title = f"неделю ({week_start.strftime('%d.%m')} - {today.strftime('%d.%m.%Y')})"
+        stats = db.get_week_stats(user_id, user_today.isoformat())
+        week_start = user_today - timedelta(days=6)
+        period_title = f"неделю ({week_start.strftime('%d.%m')} - {user_today.strftime('%d.%m.%Y')})"
         
     elif len(args) == 1:
         # /stats week или /stats month
         if args[0].lower() == 'week':
-            stats = db.get_week_stats(user_id)
-            today = date.today()
-            week_start = today - timedelta(days=6)
-            period_title = f"неделю ({week_start.strftime('%d.%m')} - {today.strftime('%d.%m.%Y')})"
+            stats = db.get_week_stats(user_id, user_today.isoformat())
+            week_start = user_today - timedelta(days=6)
+            period_title = f"неделю ({week_start.strftime('%d.%m')} - {user_today.strftime('%d.%m.%Y')})"
         elif args[0].lower() == 'month':
             year = now.year
             month = now.month
@@ -271,7 +287,10 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /chart - показывает график для последнего запрошенного периода"""
     user_id = update.effective_user.id
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
+    
+    # Используем дату пользователя для корректного отображения
+    user_today = get_user_date_from_message(update)
     
     # Проверяем наличие args и их количество
     args = context.args if context.args is not None else []
@@ -281,21 +300,19 @@ async def show_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if len(args) == 0:
         # По умолчанию - график за текущую неделю
-        stats = db.get_week_stats(user_id)
-        today = date.today()
-        week_start = today - timedelta(days=6)
-        period_title = f"неделю ({week_start.strftime('%d.%m')} - {today.strftime('%d.%m.%Y')})"
+        stats = db.get_week_stats(user_id, user_today.isoformat())
+        week_start = user_today - timedelta(days=6)
+        period_title = f"неделю ({week_start.strftime('%d.%m')} - {user_today.strftime('%d.%m.%Y')})"
         
     elif len(args) == 1:
         # /chart week или /chart month
         if args[0].lower() == 'week':
-            stats = db.get_week_stats(user_id)
-            today = date.today()
-            week_start = today - timedelta(days=6)
-            period_title = f"неделю ({week_start.strftime('%d.%m')} - {today.strftime('%d.%m.%Y')})"
+            stats = db.get_week_stats(user_id, user_today.isoformat())
+            week_start = user_today - timedelta(days=6)
+            period_title = f"неделю ({week_start.strftime('%d.%m')} - {user_today.strftime('%d.%m.%Y')})"
         elif args[0].lower() == 'month':
-            year = now.year
-            month = now.month
+            year = user_today.year
+            month = user_today.month
             stats = db.get_month_stats(user_id, year, month)
             month_names = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
                           'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь']
@@ -432,19 +449,20 @@ async def edit_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /today"""
     user_id = update.effective_user.id
-    today = date.today().isoformat()
+    user_today = get_user_date_from_message(update)
+    today = user_today.isoformat()
     
     count = db.get_date_count(user_id, today)
     
     if count is None:
         await update.message.reply_text(
-            f"📅 За сегодня ({date.today().strftime('%d.%m.%Y')}) записей нет.\n"
+            f"📅 За сегодня ({user_today.strftime('%d.%m.%Y')}) записей нет.\n"
             f"Используйте /add <количество> или просто напишите число.",
             reply_markup=get_reply_keyboard()
         )
     else:
         await update.message.reply_text(
-            f"📅 Сегодня ({date.today().strftime('%d.%m.%Y')}): {count} чиханий",
+            f"📅 Сегодня ({user_today.strftime('%d.%m.%Y')}): {count} чиханий",
             reply_markup=get_reply_keyboard()
         )
 
@@ -456,13 +474,14 @@ async def handle_number_message(update: Update, context: ContextTypes.DEFAULT_TY
     
     # Проверяем, нажата ли кнопка "Чихнуть"
     if text == "🤧 Чихнуть":
-        today = date.today().isoformat()
+        user_today = get_user_date_from_message(update)
+        today = user_today.isoformat()
         new_count = db.increment_sneeze(user_id, today)
         
         if new_count is not None:
             await update.message.reply_text(
                 f"✅ Записано чихание!\n"
-                f"📊 Сегодня ({date.today().strftime('%d.%m.%Y')}): {new_count} чиханий\n"
+                f"📊 Сегодня ({user_today.strftime('%d.%m.%Y')}): {new_count} чиханий\n"
                 f"🤧 Будь здоров!",
                 reply_markup=get_reply_keyboard()
             )
@@ -498,11 +517,12 @@ async def handle_number_message(update: Update, context: ContextTypes.DEFAULT_TY
             )
             return
         
-        today = date.today().isoformat()
+        user_today = get_user_date_from_message(update)
+        today = user_today.isoformat()
         db.add_sneeze(user_id, count, today)
         
         await update.message.reply_text(
-            f"✅ Записано: {count} чиханий за сегодня ({date.today().strftime('%d.%m.%Y')})\n"
+            f"✅ Записано: {count} чиханий за сегодня ({user_today.strftime('%d.%m.%Y')})\n"
             f"🤧 Будь здоров!",
             reply_markup=get_reply_keyboard()
         )
